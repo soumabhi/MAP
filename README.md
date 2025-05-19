@@ -177,10 +177,6 @@ Contributions are welcome! Please follow these steps:
 
 Please ensure your code adheres to the project's style guide and passes all tests.
 
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
 ## 📧 Contact & Support
 
 **Developer**: Abhishek Emmanual Hansdak  
