@@ -5,7 +5,6 @@
 FaceMap leverages advanced machine learning with Flutter to provide real-time facial authentication across all major platforms. Built for reliability in diverse enterprise environments with or without network connectivity.
 
 ![Flutter](https://img.shields.io/badge/Platform-Android%20%7C%20iOS%20%7C%20Web%20%7C%20Windows%20%7C%20macOS%20%7C%20Linux-blue)
-![License](https://img.shields.io/badge/License-MIT-green)
 
 
 
