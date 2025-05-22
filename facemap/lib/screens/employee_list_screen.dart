@@ -1,5 +1,11 @@
 import 'package:flutter/material.dart';
-import 'login_screen.dart';
+import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:cached_network_image/cached_network_image.dart';
+import '../providers/auth_provider.dart';
 import 'register_face_screen.dart';
 
 class EmployeeListScreen extends StatefulWidget {
@@ -10,210 +16,331 @@ class EmployeeListScreen extends StatefulWidget {
 }
 
 class _EmployeeListScreenState extends State<EmployeeListScreen> {
-  // Mock data for demonstration
-  final List<Map<String, dynamic>> _allEmployees = const [
-    {
-      'name': 'Amit Sharma',
-      'position': 'Software Engineer',
-      'id': 'EMP1001',
-      'avatar': 'A',
-    },
-    {
-      'name': 'Sneha Iyer',
-      'position': 'UX Designer',
-      'id': 'EMP1002',
-      'avatar': 'S',
-    },
-    {
-      'name': 'Rohit Verma',
-      'position': 'Product Manager',
-      'id': 'EMP1003',
-      'avatar': 'R',
-    },
-    {
-      'name': 'Pooja Mehta',
-      'position': 'Data Analyst',
-      'id': 'EMP1004',
-      'avatar': 'P',
-    },
-    {
-      'name': 'Karan Patel',
-      'position': 'QA Engineer',
-      'id': 'EMP1005',
-      'avatar': 'K',
-    },
-    {
-      'name': 'Anjali Deshmukh',
-      'position': 'Marketing Specialist',
-      'id': 'EMP1006',
-      'avatar': 'A',
-    },
-    {
-      'name': 'Vikram Rao',
-      'position': 'DevOps Engineer',
-      'id': 'EMP1007',
-      'avatar': 'V',
-    },
-    {
-      'name': 'Neha Sinha',
-      'position': 'HR Manager',
-      'id': 'EMP1008',
-      'avatar': 'N',
-    },
-    {
-      'name': 'Arjun Nair',
-      'position': 'Frontend Developer',
-      'id': 'EMP1009',
-      'avatar': 'A',
-    },
-    {
-      'name': 'Meera Das',
-      'position': 'Backend Developer',
-      'id': 'EMP1010',
-      'avatar': 'M',
-    },
-  ];
+  // List to store employees fetched from API
+  final List<Map<String, dynamic>> _allEmployees = [];
 
   // Filtered employees list for search functionality
   late List<Map<String, dynamic>> _filteredEmployees;
 
+  // Loading state
+  bool _isLoading = true;
+
   @override
   void initState() {
     super.initState();
+    _loadEmployees();
     _filteredEmployees = _allEmployees;
   }
 
+Future<void> _loadEmployees() async {
+  setState(() {
+    _isLoading = true;
+  });
+
+  try {
+    const storage = FlutterSecureStorage();
+    final branchId = await storage.read(key: 'branch_id');
+    final token = await storage.read(key: 'auth_token');
+
+    if (branchId == null || token == null) {
+      throw Exception('Missing branch ID or authentication token.');
+    }
+
+    final uri = Uri.parse('http://10.0.2.2:5000/api/employee/getAllEmplyeeByBranch/$branchId');
+
+    final response = await http.get(
+      uri,
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      },
+    );
+
+    if (response.statusCode != 200) {
+      throw Exception('Server responded with status ${response.statusCode}');
+    }
+
+    final Map<String, dynamic> data = json.decode(response.body);
+    final List<dynamic> employees = data['employees'];
+
+    if (employees.isEmpty) {
+      throw Exception('No employees found for this branch.');
+    }
+
+    _allEmployees.clear();
+
+    for (final emp in employees) {
+      try {
+        // First, let's see the ENTIRE employee object
+        debugPrint('🔍 FULL EMPLOYEE OBJECT: ${emp.toString()}');
+        
+        // Parse user name
+        final userName = emp['userName'] ?? {};
+        final firstName = userName['firstName']?.toString() ?? '';
+        final lastName = userName['lastName']?.toString() ?? '';
+        final fullName = '$firstName $lastName'.trim();
+
+        // Format join date
+        final rawJoinDate = emp['createdAt']?.toString();
+        final joinDateFormatted = rawJoinDate != null
+            ? DateFormat('MMMM dd, yyyy').format(DateTime.parse(rawJoinDate))
+            : 'N/A';
+
+        // Let's check ALL possible image fields in the response
+        debugPrint('🖼️ Checking ALL possible image fields:');
+        debugPrint('userFaceImage: ${emp['userFaceImage']}');
+        debugPrint('faceImage: ${emp['faceImage']}');
+        debugPrint('avatar: ${emp['avatar']}');
+        debugPrint('profileImage: ${emp['profileImage']}');
+        debugPrint('image: ${emp['image']}');
+        debugPrint('photo: ${emp['photo']}');
+        
+        // Handle face image from multiple possible fields
+        String? faceImageUrl;
+        
+        // Check userFaceImage (your current field)
+        final List<dynamic>? userFaceImages = emp['userFaceImage'];
+        if (userFaceImages != null && userFaceImages.isNotEmpty) {
+          final firstImage = userFaceImages[0];
+          debugPrint('📱 userFaceImage[0]: $firstImage (Type: ${firstImage.runtimeType})');
+          
+          if (firstImage is String && firstImage.isNotEmpty) {
+            faceImageUrl = firstImage;
+            debugPrint('✅ Found valid userFaceImage URL: $faceImageUrl');
+          } else if (firstImage is Map) {
+            // Maybe the image data is nested in an object
+            debugPrint('📦 userFaceImage is a Map: $firstImage');
+            faceImageUrl = firstImage['url']?.toString() ?? 
+                         firstImage['secure_url']?.toString() ?? 
+                         firstImage['public_id']?.toString();
+            debugPrint('🔗 Extracted URL from Map: $faceImageUrl');
+          }
+        }
+        
+        // If no userFaceImage, check other possible fields
+        if (faceImageUrl == null || faceImageUrl.isEmpty) {
+          debugPrint('⚠️ No userFaceImage found, checking other fields...');
+          
+          // Check direct string fields
+          final possibleFields = ['avatar', 'profileImage', 'image', 'photo', 'faceImage'];
+          for (final field in possibleFields) {
+            final value = emp[field];
+            if (value is String && value.isNotEmpty) {
+              faceImageUrl = value;
+              debugPrint('✅ Found image in $field: $faceImageUrl');
+              break;
+            } else if (value != null) {
+              debugPrint('❌ $field exists but is not a valid string: $value (Type: ${value.runtimeType})');
+            }
+          }
+        }
+        
+        // Final URL validation
+        if (faceImageUrl != null && faceImageUrl.isNotEmpty) {
+          if (Uri.tryParse(faceImageUrl)?.hasAbsolutePath == true) {
+            debugPrint('🎉 FINAL VALID IMAGE URL: $faceImageUrl');
+          } else {
+            debugPrint('❌ Invalid URL format: $faceImageUrl');
+            faceImageUrl = null; // Reset to null if invalid
+          }
+        } else {
+          debugPrint('💔 NO IMAGE URL FOUND FOR THIS EMPLOYEE');
+        }
+
+        // Handle designation - Fix the designation parsing
+        final designation = emp['designationId'];
+        String designationName = 'Employee'; // Default value
+        
+        debugPrint('🏷️ Raw designation data: $designation (Type: ${designation.runtimeType})');
+        
+        if (designation is Map) {
+          // If designation is a map, get the 'name' field
+          designationName = designation['name']?.toString() ?? 
+                           designation['designationName']?.toString() ?? 
+                           'Employee';
+          debugPrint('📋 Extracted from Map - designationName: $designationName');
+        } else if (designation is String) {
+          // If designation is already a string
+          designationName = designation;
+          debugPrint('📋 Direct string - designationName: $designationName');
+        }
+
+        debugPrint('════════════════════════════');
+        debugPrint('👤 FINAL EMPLOYEE SUMMARY:');
+        debugPrint('Name: $fullName');
+        debugPrint('Position: $designationName');
+        debugPrint('Avatar URL: $faceImageUrl');
+        debugPrint('Has Biometric: ${emp['faceIdExist'] == 1}');
+        debugPrint('════════════════════════════');
+
+        _allEmployees.add({
+          'id': emp['userId'] ?? '',
+          'name': fullName,
+          'position': designationName, // This should now be clean
+          'email': emp['userEmail'] ?? '',
+          'avatar': faceImageUrl,
+          'phone': emp['phoneNo'] ?? '+91 9XXXXXXXX',
+          'joinDate': joinDateFormatted,
+          'gender': emp['gender'] ?? '',
+          'faceImage': userFaceImages ?? [],
+          'hasBiometric': emp['faceIdExist'] == 1,
+        });
+      } catch (parseError) {
+        debugPrint('❌ Error parsing employee entry: $parseError');
+      }
+    }
+
+    setState(() {
+      _filteredEmployees = List.from(_allEmployees);
+      _isLoading = false;
+    });
+  } catch (e, stackTrace) {
+    debugPrint('❌ Load Employee Error: $e');
+    debugPrintStack(stackTrace: stackTrace);
+
+    setState(() {
+      _isLoading = false;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Failed to load employees:\n${e.toString()}'),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+}
+
   // Logout functionality
   void _handleLogout() {
-  showDialog(
-    context: context,
-    builder: (ctx) => Dialog(
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.cyan.shade100.withOpacity(0.5),
-              spreadRadius: 5,
-              blurRadius: 20,
-              offset: const Offset(0, 10),
+    showDialog(
+      context: context,
+      builder:
+          (ctx) => Dialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
             ),
-          ],
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Logout Icon
-              Container(
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: Colors.cyan.shade50,
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  Icons.logout_outlined,
-                  size: 60,
-                  color: Colors.cyan.shade700,
-                ),
-              ),
-              const SizedBox(height: 24),
-              
-              // Title
-              Text(
-                'Logout',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.cyan.shade800,
-                ),
-              ),
-              const SizedBox(height: 16),
-              
-              // Content
-              Text(
-                'Are you sure you want to log out?',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Colors.grey.shade700,
-                ),
-              ),
-              const SizedBox(height: 32),
-              
-              // Action Buttons
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  // Cancel Button
-                  ElevatedButton(
-                    onPressed: () {
-                      Navigator.of(ctx).pop();
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.grey.shade100,
-                      foregroundColor: Colors.cyan.shade700,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 12,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    child: const Text(
-                      'Cancel',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  
-                  // Logout Button
-                  ElevatedButton(
-                    onPressed: () {
-                      // Navigate to login screen and remove all previous routes
-                      Navigator.of(context).pushAndRemoveUntil(
-                        MaterialPageRoute(
-                          builder: (context) => const LoginScreen(),
-                        ),
-                        (Route<dynamic> route) => false,
-                      );
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.cyan.shade700,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 12,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      elevation: 5,
-                    ),
-                    child: const Text(
-                      'Logout',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.cyan.shade100.withOpacity(0.5),
+                    spreadRadius: 5,
+                    blurRadius: 20,
+                    offset: const Offset(0, 10),
                   ),
                 ],
               ),
-            ],
+              child: Padding(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Logout Icon
+                    Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: Colors.cyan.shade50,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        Icons.logout_outlined,
+                        size: 60,
+                        color: Colors.cyan.shade700,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+
+                    // Title
+                    Text(
+                      'Logout',
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.cyan.shade800,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Content
+                    Text(
+                      'Are you sure you want to log out?',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+
+                    // Action Buttons
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        // Cancel Button
+                        ElevatedButton(
+                          onPressed: () {
+                            Navigator.of(ctx).pop();
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.grey.shade100,
+                            foregroundColor: Colors.cyan.shade700,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 24,
+                              vertical: 12,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          child: const Text(
+                            'Cancel',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+
+                        // Logout Button
+                        ElevatedButton(
+                          onPressed: () async {
+                            Navigator.of(ctx).pop(); // Close dialog
+
+                            // Log out via AuthProvider
+                            final authProvider = Provider.of<AuthProvider>(
+                              context,
+                              listen: false,
+                            );
+                            await authProvider.logout();
+                            // ✅ No need to navigate — app.dart will reactively show LoginScreen
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.cyan.shade700,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 24,
+                              vertical: 12,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            elevation: 5,
+                          ),
+                          child: const Text(
+                            'Logout',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
-        ),
-      ),
-    ),
-  );
-}
+    );
+  }
 
   // Search function
   void _searchEmployees(String query) {
@@ -225,13 +352,16 @@ class _EmployeeListScreenState extends State<EmployeeListScreen> {
             _allEmployees
                 .where(
                   (employee) =>
-                      employee['name'].toLowerCase().contains(
+                      employee['name'].toString().toLowerCase().contains(
                         query.toLowerCase(),
                       ) ||
-                      employee['position'].toLowerCase().contains(
+                      employee['position'].toString().toLowerCase().contains(
                         query.toLowerCase(),
                       ) ||
-                      employee['id'].toLowerCase().contains(
+                      employee['id'].toString().toLowerCase().contains(
+                        query.toLowerCase(),
+                      ) ||
+                      employee['email'].toString().toLowerCase().contains(
                         query.toLowerCase(),
                       ),
                 )
@@ -243,26 +373,41 @@ class _EmployeeListScreenState extends State<EmployeeListScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: CustomScrollView(
-        slivers: [
-          _buildAppBar(context),
-          _buildSearchBar(),
-          _buildEmployeeList(context),
-        ],
-      ),
+      body:
+          _isLoading
+              ? Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(color: Colors.cyan.shade700),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Loading employees...',
+                      style: TextStyle(color: Colors.cyan.shade700),
+                    ),
+                  ],
+                ),
+              )
+              : RefreshIndicator(
+                onRefresh: _loadEmployees,
+                color: Colors.cyan.shade700,
+                child: CustomScrollView(
+                  slivers: [
+                    _buildAppBar(context),
+                    _buildSearchBar(),
+                    _buildEmployeeList(context),
+                  ],
+                ),
+              ),
       floatingActionButton: FloatingActionButton(
         onPressed: () {
           Navigator.push(
             context,
             MaterialPageRoute(builder: (context) => const RegisterFaceScreen()),
-          );
+          ).then((_) => _loadEmployees()); // Refresh after registration
         },
         backgroundColor: Colors.cyan.shade700,
-        child: const Icon(
-          Icons.add,
-          color: Colors.white,
-          size: 32,
-        ), // Made bigger
+        child: const Icon(Icons.add, color: Colors.white, size: 32),
         elevation: 4,
       ),
     );
@@ -323,20 +468,11 @@ class _EmployeeListScreenState extends State<EmployeeListScreen> {
         ),
       ),
       actions: [
-        // Add Register Employee Icon
-        // IconButton(
-        //   icon: const Icon(Icons.person_add, color: Colors.white),
-        //   tooltip: 'Register New Employee',
-        //   onPressed: () {
-        //     Navigator.push(
-        //       context,
-        //       MaterialPageRoute(
-        //         builder: (context) => const RegisterFaceScreen(),
-        //       ),
-        //     );
-        //   },
-        // ),
-        // Add Logout Icon
+        IconButton(
+          icon: const Icon(Icons.refresh, color: Colors.white),
+          tooltip: 'Refresh',
+          onPressed: _loadEmployees,
+        ),
         IconButton(
           icon: const Icon(Icons.logout, color: Colors.white),
           tooltip: 'Logout',
@@ -359,7 +495,7 @@ class _EmployeeListScreenState extends State<EmployeeListScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: TextField(
               decoration: InputDecoration(
-                hintText: 'Search employees...',
+                hintText: 'Search by name, position, ID, email...',
                 icon: Icon(Icons.search, color: Colors.cyan.shade700),
                 border: InputBorder.none,
               ),
@@ -457,18 +593,7 @@ class _EmployeeListScreenState extends State<EmployeeListScreen> {
               children: [
                 Hero(
                   tag: 'avatar-${employee['id']}',
-                  child: CircleAvatar(
-                    radius: 28,
-                    backgroundColor: avatarColors[colorIndex],
-                    child: Text(
-                      employee['avatar'],
-                      style: const TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
+                  child: _buildAvatar(employee, avatarColors[colorIndex]),
                 ),
                 const SizedBox(width: 16),
                 Expanded(
@@ -521,6 +646,54 @@ class _EmployeeListScreenState extends State<EmployeeListScreen> {
         ),
       ),
     );
+  }
+
+  Widget _buildAvatar(Map<String, dynamic> employee, Color fallbackColor) {
+    final String? avatarUrl = employee['avatar'];
+    
+    if (avatarUrl != null && avatarUrl.isNotEmpty) {
+      return CachedNetworkImage(
+        imageUrl: avatarUrl,
+        imageBuilder: (context, imageProvider) => CircleAvatar(
+          radius: 28,
+          backgroundImage: imageProvider,
+        ),
+        placeholder: (context, url) => CircleAvatar(
+          radius: 28,
+          backgroundColor: Colors.grey.shade200,
+          child: const CircularProgressIndicator(strokeWidth: 2),
+        ),
+        errorWidget: (context, url, error) => CircleAvatar(
+          radius: 28,
+          backgroundColor: fallbackColor,
+          child: Text(
+            employee['name'] != null && employee['name'].toString().isNotEmpty
+                ? employee['name'].toString()[0].toUpperCase()
+                : 'E',
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+            ),
+          ),
+        ),
+      );
+    } else {
+      return CircleAvatar(
+        radius: 28,
+        backgroundColor: fallbackColor,
+        child: Text(
+          employee['name'] != null && employee['name'].toString().isNotEmpty
+              ? employee['name'].toString()[0].toUpperCase()
+              : 'E',
+          style: const TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
+          ),
+        ),
+      );
+    }
   }
 
   void _showEmployeeModal(BuildContext context, Map<String, dynamic> employee) {
@@ -623,18 +796,7 @@ class _EmployeeDetailsModal extends StatelessWidget {
               children: [
                 Hero(
                   tag: 'avatar-${employee['id']}',
-                  child: CircleAvatar(
-                    radius: 50,
-                    backgroundColor: Colors.white,
-                    child: Text(
-                      employee['avatar'],
-                      style: TextStyle(
-                        fontSize: 40,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.cyan.shade700,
-                      ),
-                    ),
-                  ),
+                  child: _buildModalAvatar(employee),
                 ),
                 const SizedBox(height: 16),
                 Text(
@@ -660,6 +822,54 @@ class _EmployeeDetailsModal extends StatelessWidget {
     );
   }
 
+  Widget _buildModalAvatar(Map<String, dynamic> employee) {
+    final String? avatarUrl = employee['avatar'];
+    
+    if (avatarUrl != null && avatarUrl.isNotEmpty) {
+      return CachedNetworkImage(
+        imageUrl: avatarUrl,
+        imageBuilder: (context, imageProvider) => CircleAvatar(
+          radius: 50,
+          backgroundImage: imageProvider,
+        ),
+        placeholder: (context, url) => CircleAvatar(
+          radius: 50,
+          backgroundColor: Colors.grey.shade200,
+          child: const CircularProgressIndicator(strokeWidth: 2),
+        ),
+        errorWidget: (context, url, error) => CircleAvatar(
+          radius: 50,
+          backgroundColor: Colors.white,
+          child: Text(
+            employee['name'] != null && employee['name'].toString().isNotEmpty
+                ? employee['name'].toString()[0].toUpperCase()
+                : 'E',
+            style: TextStyle(
+              fontSize: 40,
+              fontWeight: FontWeight.bold,
+              color: Colors.cyan.shade700,
+            ),
+          ),
+        ),
+      );
+    } else {
+      return CircleAvatar(
+        radius: 50,
+        backgroundColor: Colors.white,
+        child: Text(
+          employee['name'] != null && employee['name'].toString().isNotEmpty
+              ? employee['name'].toString()[0].toUpperCase()
+              : 'E',
+          style: TextStyle(
+            fontSize: 40,
+            fontWeight: FontWeight.bold,
+            color: Colors.cyan.shade700,
+          ),
+        ),
+      );
+    }
+  }
+
   Widget _buildEmployeeDetails(BuildContext context) {
     return Expanded(
       child: Padding(
@@ -675,26 +885,29 @@ class _EmployeeDetailsModal extends StatelessWidget {
                 'Employee ID',
                 employee['id'],
               ),
-              _buildDetailRow(
-                Icons.email_outlined,
-                'Email',
-                '${employee['name'].toString().toLowerCase().replaceAll(' ', '.')}@company.com',
-              ),
+              _buildDetailRow(Icons.email_outlined, 'Email', employee['email']),
               _buildDetailRow(
                 Icons.phone_outlined,
                 'Phone',
-                '+91 983746${4000 + int.parse(employee['id'].toString().substring(3))}',
+                employee['phone'] ?? '+91 9XXXXXXXX',
               ),
               _buildDetailRow(
                 Icons.calendar_today_outlined,
                 'Joined',
-                'January 15, 2023',
+                employee['joinDate'] ?? 'January 15, 2023',
               ),
+              if (employee['gender'] != null &&
+                  employee['gender'].toString().isNotEmpty)
+                _buildDetailRow(
+                  Icons.person_outline,
+                  'Gender',
+                  employee['gender'],
+                ),
 
               const SizedBox(height: 30),
               _buildDetailSection('Biometric Information'),
               const SizedBox(height: 16),
-              _buildBiometricStatus(),
+              _buildBiometricStatus(employee['hasBiometric'] == true),
             ],
           ),
         ),
@@ -741,28 +954,30 @@ class _EmployeeDetailsModal extends StatelessWidget {
             child: Icon(icon, color: Colors.cyan.shade700, size: 20),
           ),
           const SizedBox(width: 16),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-              ),
-              Text(
-                value,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w500,
-                  fontSize: 16,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
                 ),
-              ),
-            ],
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w500,
+                    fontSize: 16,
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildBiometricStatus() {
+  Widget _buildBiometricStatus(bool isEnabled) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -775,10 +990,14 @@ class _EmployeeDetailsModal extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: Colors.green.shade100,
+              color: isEnabled ? Colors.green.shade100 : Colors.red.shade100,
               shape: BoxShape.circle,
             ),
-            child: Icon(Icons.face, color: Colors.green.shade700, size: 32),
+            child: Icon(
+              isEnabled ? Icons.face : Icons.no_accounts,
+              color: isEnabled ? Colors.green.shade700 : Colors.red.shade700,
+              size: 32,
+            ),
           ),
           const SizedBox(width: 16),
           Expanded(
@@ -786,16 +1005,21 @@ class _EmployeeDetailsModal extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Face Recognition Enabled',
+                  isEnabled
+                      ? 'Face Recognition Enabled'
+                      : 'Face Recognition Not Set Up',
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
-                    color: Colors.green.shade700,
+                    color:
+                        isEnabled ? Colors.green.shade700 : Colors.red.shade700,
                     fontSize: 16,
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'Last updated: March 15, 2025',
+                  isEnabled
+                      ? 'Employee can use facial authentication'
+                      : 'Employee needs to register face for authentication',
                   style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
                 ),
               ],

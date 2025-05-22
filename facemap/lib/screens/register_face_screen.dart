@@ -6,11 +6,12 @@ import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'dart:async';
 import 'dart:ui';
-// import 'dart:convert';
-// import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 import '../models/face_model.dart';
 import '../services/face_service.dart';
 import '../services/hive_service.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class RegisterFaceScreen extends StatefulWidget {
   const RegisterFaceScreen({super.key});
@@ -131,6 +132,25 @@ class _RegisterFaceScreenState extends State<RegisterFaceScreen>
     }
     super.dispose();
   }
+
+  Future<void> _uploadFaceToBackend(String employeeId, List<double> embedding) async {
+  final url = Uri.parse('http://10.0.2.2:5000/api/employee/registerEmployeFace');
+  try {
+    final response = await http.post(
+      url,
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'userId': employeeId, 'embedding': embedding}),
+    );
+
+    if (response.statusCode == 200) {
+      debugPrint('✅ [Backend] Face data uploaded successfully for $employeeId');
+    } else {
+      debugPrint('❌ [Backend] Failed to upload face: ${response.statusCode} ${response.body}');
+    }
+  } catch (e) {
+    debugPrint('❗ [Backend] Exception while uploading face: $e');
+  }
+}
 
   Future<void> _initializeCamera() async {
     if (!mounted) return;
@@ -292,55 +312,110 @@ class _RegisterFaceScreenState extends State<RegisterFaceScreen>
     _countdownController.forward();
   }
 
-  void _verifyAndProceedWithEmployeeId() {
-    final employeeId = _employeeIdController.text.trim();
+  void _verifyAndProceedWithEmployeeId() async {
+  final employeeId = _employeeIdController.text.trim();
 
-    // Verify that the input contains only numbers
-    if (employeeId.isEmpty) {
-      _showResult(context, 'Please enter your Employee ID', isError: true);
-      return;
-    }
+  debugPrint('🟡 Verifying Employee ID: "$employeeId"');
 
-    if (!RegExp(r'^[0-9]+$').hasMatch(employeeId)) {
-      _showResult(
-        context,
-        'Employee ID must contain only numbers',
-        isError: true,
-      );
-      return;
-    }
-
-    // If validation passes, proceed directly to camera initialization
-    setState(() {
-      _isEmployeeIdEntered = true;
-    });
-    _initializeCamera();
+  if (employeeId.isEmpty) {
+    debugPrint('❌ Employee ID is empty');
+    _showResult(context, 'Please enter your Employee ID', isError: true);
+    return;
   }
 
-  // Future<void> _uploadFaceDataToServer(
-  //   String employeeId,
-  //   List<double> embedding,
-  // ) async {
-  //   try {
-  //     final url = Uri.parse('http://10.0.2.2:5000/api/employees/embedding');
+  setState(() {
+    _isProcessing = true;
+    _statusMessage = 'Verifying employee ID...';
+  });
 
-  //     final response = await http.post(
-  //       url,
-  //       headers: {'Content-Type': 'application/json'},
-  //       body: jsonEncode({'employeeId': employeeId, 'embedding': embedding}),
-  //     );
+  try {
+    final storage = FlutterSecureStorage();
+    final token = await storage.read(key: 'auth_token');
 
-  //     if (response.statusCode == 200) {
-  //       debugPrint('✅ Face data uploaded successfully');
-  //     } else {
-  //       debugPrint(
-  //         '❌ Server responded with error: ${response.statusCode} ${response.body}',
-  //       );
-  //     }
-  //   } catch (e) {
-  //     debugPrint('❌ Upload failed: $e');
-  //   }
-  // }
+    debugPrint('🔐 Retrieved Auth Token: ${token != null ? "Yes" : "No"}');
+    final url = 'http://10.0.2.2:5000/api/employee/byUserId/$employeeId';
+    debugPrint('🌐 Sending GET request to: $url');
+
+    final response = await http.get(
+      Uri.parse(url),
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      },
+    );
+
+    debugPrint('📩 Response Status Code: ${response.statusCode}');
+    debugPrint('📦 Response Body: ${response.body}');
+
+    if (!mounted) return;
+
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      debugPrint('✅ Employee Found: ${data['userName']} (${data['userId']})');
+
+      final faceExists = data['faceIdExist'] == 1;
+
+      if (faceExists) {
+        final confirm = await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text("Face Already Registered"),
+            content: const Text("This employee already has a registered face. Do you want to replace it?"),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text("Cancel"),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text("Replace"),
+              ),
+            ],
+          ),
+        );
+
+        if (confirm != true) {
+          setState(() {
+            _isProcessing = false;
+            _statusMessage = '';
+          });
+          return;
+        }
+      }
+
+      setState(() {
+        _isEmployeeIdEntered = true;
+        _isProcessing = false;
+        _statusMessage = '';
+      });
+
+      debugPrint('🎯 Employee ID matched, proceeding to initialize camera...');
+      _initializeCamera();
+    } else if (response.statusCode == 404) {
+      debugPrint('❗ Employee not found with ID: $employeeId');
+      setState(() {
+        _isProcessing = false;
+        _statusMessage = '';
+      });
+      _showResult(context, 'Employee not found with ID: $employeeId', isError: true);
+    } else {
+      debugPrint('⚠️ Unexpected Server Response: ${response.statusCode}');
+      setState(() {
+        _isProcessing = false;
+        _statusMessage = '';
+      });
+      _showResult(context, 'Server error: ${response.statusCode}', isError: true);
+    }
+  } catch (e) {
+    debugPrint('🔥 Exception occurred during verification: $e');
+    if (!mounted) return;
+    setState(() {
+      _isProcessing = false;
+      _statusMessage = '';
+    });
+    _showResult(context, 'Error verifying employee ID: $e', isError: true);
+  }
+}
 
   Future<void> _takePicture() async {
     if (_cameraController == null || !_cameraController!.value.isInitialized) {
@@ -421,6 +496,8 @@ class _RegisterFaceScreenState extends State<RegisterFaceScreen>
 
       final hiveService = Provider.of<HiveService>(context, listen: false);
       await hiveService.registerFace(newFace);
+
+      await _uploadFaceToBackend(newFace.employeeId, newFace.embedding);
 
       // await _uploadFaceDataToServer(newFace.employeeId, newFace.embedding);
 

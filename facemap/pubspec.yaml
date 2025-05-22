@@ -51,6 +51,8 @@ dependencies:
   path_provider: ^2.1.5
   new_face_liveness: ^4.0.0
   http: ^1.4.0
+  flutter_secure_storage: ^9.2.4
+  cached_network_image: ^3.4.1
 
 dev_dependencies:
   flutter_test:

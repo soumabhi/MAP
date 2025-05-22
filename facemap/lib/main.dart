@@ -1,5 +1,6 @@
+// 
+
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import 'app/app.dart';
@@ -16,24 +17,21 @@ void main() async {
   Hive.registerAdapter(FaceAdapter());
   await Hive.openBox<Face>('faces');
 
-  // 2️⃣ Initialize your services
+  // 2️⃣ Initialize services
   final hiveService = HiveService();
-  await hiveService.init();      // your HiveService setup
+  await hiveService.init(); // custom logic for face storage if any
 
   final mlService = MLService();
-  await mlService.loadModel();   // load the ML model
+  await mlService.loadModel(); // load tflite model
 
-  // 3️⃣ Run the app, injecting services via Provider
+  final faceService = FaceService(mlService: mlService);
+
+  // 3️⃣ Run app with services passed into MyApp
   runApp(
-    MultiProvider(
-      providers: [
-        Provider<HiveService>.value(value: hiveService),
-        Provider<MLService>.value(value: mlService),
-        Provider<FaceService>(
-          create: (_) => FaceService(mlService: mlService),
-        ),
-      ],
-      child: const MyApp(),
+    MyApp(
+      hiveService: hiveService,
+      mlService: mlService,
+      faceService: faceService,
     ),
   );
 }

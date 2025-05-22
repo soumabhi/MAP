@@ -9,6 +9,10 @@ import '../models/face_model.dart';
 import '../services/face_service.dart';
 import '../services/hive_service.dart';
 import '../services/ml_service.dart';
+// import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import '../services/auth_service.dart';
 
 class ScanFaceScreen extends StatefulWidget {
   const ScanFaceScreen({super.key});
@@ -110,7 +114,8 @@ class _ScanFaceScreenState extends State<ScanFaceScreen>
       setState(() {
         _cameraController = controller;
         _isCameraInitialized = true;
-        _statusMessage = 'Select IN or OUT, then position your face in the oval';
+        _statusMessage =
+            'Select IN or OUT, then position your face in the oval';
       });
     } catch (e) {
       debugPrint('Error initializing camera: $e');
@@ -138,7 +143,7 @@ class _ScanFaceScreenState extends State<ScanFaceScreen>
         _showingSuccessDialog ||
         _attendanceMode.isEmpty)
       return;
-      
+
     final faceService = context.read<FaceService>();
     setState(() {
       _isProcessing = true;
@@ -207,172 +212,158 @@ class _ScanFaceScreenState extends State<ScanFaceScreen>
   }
 
   Future<void> _processFaceRecognition(
-    Uint8List imageBytes,
-    String filePath,
-  ) async {
-    if (!mounted) return;
-    setState(() {
-      _statusMessage = 'Processing face...';
-    });
-    final faceService = context.read<FaceService>();
-    final hiveService = context.read<HiveService>();
-    final mlService = context.read<MLService>();
+  Uint8List imageBytes,
+  String filePath,
+) async {
+  if (!mounted) return;
+  setState(() {
+    _statusMessage = 'Processing face...';
+  });
 
-    try {
-      final faceEmbedding = await faceService.getEmbedding(
-        imageBytes,
-        filePath,
-      );
-      if (faceEmbedding.isEmpty) {
-        debugPrint('Warning: Empty embedding generated');
-        setState(() {
-          _statusMessage = 'Failed to analyze face features';
-          _isProcessing = false;
-        });
-        _processingTimer = Timer(
-          const Duration(seconds: 3),
-          _startFaceDetection,
-        );
-        return;
-      }
+  final faceService = context.read<FaceService>();
+  final hiveService = context.read<HiveService>();
+  final mlService = context.read<MLService>();
+  final authService = AuthService();
 
-      final storedFaces = await hiveService.getFaces();
-
-      if (!mounted) return;
-      if (storedFaces.isEmpty) {
-        setState(() {
-          _statusMessage = 'No registered faces. Please register first';
-          _isProcessing = false;
-        });
-        return;
-      }
-
-      // Track best match and its similarity score
-      Face? bestMatch;
-      double bestSimilarity = 0.0; // Now using similarity (higher is better)
-      double confidence = 0.0;
-
-      // Debug information for face matching process
-      debugPrint(
-        'Starting face matching with ${storedFaces.length} registered faces',
-      );
-
-      // Process all faces to find the best match
-      for (final storedFace in storedFaces) {
-        // Verify embedding isn't empty
-        if (storedFace.embedding.isEmpty) {
-          debugPrint(
-            'Skipping face ${storedFace.employeeId} - empty embedding',
-          );
-          continue;
-        }
-
-        // Calculate similarity score (higher is better)
-        final similarity = mlService.calculateSimilarity(
-          faceEmbedding,
-          storedFace.embedding,
-        );
-
-        // Log similarity for debugging
-        debugPrint(
-          'Face match similarity: $similarity for ${storedFace.employeeId}',
-        );
-
-        // Find the face with maximum similarity
-        if (similarity > bestSimilarity) {
-          bestSimilarity = similarity;
-          bestMatch = storedFace;
-        }
-      }
-
-      // Use similarity directly as confidence
-      confidence = bestSimilarity;
-
-      // Only consider it a match if above our threshold
-      Face? match;
-      if (bestSimilarity >= _matchSimilarityThreshold &&
-          confidence >= _minConfidenceScore) {
-        match = bestMatch;
-        debugPrint(
-          'Match found: ${match?.employeeId} with similarity: $bestSimilarity, confidence: ${confidence.toStringAsFixed(2)}',
-        );
-      } else {
-        debugPrint(
-          'No match found. Best similarity was $bestSimilarity (threshold: $_matchSimilarityThreshold)',
-        );
-      }
-
-      if (!mounted) return;
-
-      // Get confidence color based on score
-      Color confidenceColor = Colors.red;
-      String confidenceLevel = "Low";
-
-      if (match != null) {
-        if (bestSimilarity >= _highMatchThreshold) {
-          confidenceColor = const Color.fromARGB(255, 59, 189, 61);
-          confidenceLevel = "Very High";
-        } else if (confidence >= 0.75) {
-          confidenceColor = Colors.green;
-          confidenceLevel = "High";
-        } else if (confidence >= 0.7) {
-          confidenceColor = Colors.lime;
-          confidenceLevel = "Medium";
-        } else {
-          confidenceColor = Colors.amber;
-          confidenceLevel = "Acceptable";
-        }
-      }
-
+  try {
+    final faceEmbedding = await faceService.getEmbedding(imageBytes, filePath);
+    if (faceEmbedding.isEmpty) {
       setState(() {
-        if (match != null) {
-          _statusMessage = '✓ Match found: ${match.employeeId}';
-          _showingSuccessDialog = true;
-          
-          // Save attendance record to local storage
-          // _saveAttendanceRecord(match.employeeId);
-        } else {
-          _statusMessage = '✗ No match found';
-        }
-        _isProcessing = false;
-      });
-
-      // If there's a match, show detailed confidence info in a dialog
-      if (match != null) {
-        Future.delayed(Duration(milliseconds: 500), () {
-          if (mounted) {
-            _showSuccessMatchDialog(
-              match!,
-              confidence,
-              confidenceColor,
-              confidenceLevel,
-              bestSimilarity,
-            );
-          }
-        });
-      } else {
-        // Show debug info when no match found
-        debugPrint(
-          'Debug - Best similarity: $bestSimilarity, Threshold: $_matchSimilarityThreshold',
-        );
-        debugPrint(
-          'Debug - Best match employeeId: ${bestMatch?.employeeId ?? "None"}',
-        );
-        _processingTimer = Timer(
-          const Duration(seconds: 3),
-          _startFaceDetection,
-        );
-      }
-    } catch (e) {
-      debugPrint('Error during face recognition: $e');
-      if (!mounted) return;
-      setState(() {
-        _statusMessage = 'Error during recognition';
+        _statusMessage = 'Failed to analyze face features';
         _isProcessing = false;
       });
       _processingTimer = Timer(const Duration(seconds: 3), _startFaceDetection);
+      return;
     }
+
+    final storedFaces = await hiveService.getFaces();
+    if (!mounted || storedFaces.isEmpty) {
+      setState(() {
+        _statusMessage = 'No registered faces. Please register first';
+        _isProcessing = false;
+      });
+      return;
+    }
+
+    Face? bestMatch;
+    double bestSimilarity = 0.0;
+
+    for (final storedFace in storedFaces) {
+      if (storedFace.embedding.isEmpty) continue;
+      final similarity = mlService.calculateSimilarity(faceEmbedding, storedFace.embedding);
+      if (similarity > bestSimilarity) {
+        bestSimilarity = similarity;
+        bestMatch = storedFace;
+      }
+    }
+
+    if (bestSimilarity < _matchSimilarityThreshold || bestMatch == null) {
+      setState(() {
+        _statusMessage = '✗ No match found';
+        _isProcessing = false;
+      });
+      _processingTimer = Timer(const Duration(seconds: 3), _startFaceDetection);
+      return;
+    }
+
+    final match = bestMatch;
+    final employeeId = match.employeeId;
+    final branchId = await authService.getBranchId() ?? '';
+
+    final now = DateTime.now();
+    final formattedDate = DateFormat('yyyy-MM-dd').format(now);
+    // final formattedTime = DateFormat('HH:mm:ss').format(now);
+    final fullTime = now.toIso8601String(); // e.g. 2025-05-21T11:53:41.000Z
+
+
+    final body = {
+      "user": employeeId,
+      "date": formattedDate,
+      // "branch": branchId,
+      if (_attendanceMode == 'IN') "checkInTime": fullTime,
+      if (_attendanceMode == 'OUT') "checkOutTime": fullTime,
+      if (_attendanceMode == 'IN') "checkinBranch": branchId,
+      if (_attendanceMode == 'OUT') "checkoutBranch": branchId,
+    };
+
+    final url = _attendanceMode == 'IN'
+        ? 'http://10.0.2.2:5000/api/attendance/create'
+        : 'http://10.0.2.2:5000/api/attendance/checkout';
+
+    final headers = await authService.getAuthHeaders();
+    final response = await http.post(Uri.parse(url), headers: headers, body: jsonEncode(body));
+
+    debugPrint('✅ Attendance response (${response.statusCode}): ${response.body}');
+
+    Map<String, dynamic>? employeeDetails;
+    if (response.statusCode == 201 || response.statusCode == 200) {
+      final empResponse = await http.get(
+        Uri.parse('http://10.0.2.2:5000/api/employee/byUserId/$employeeId'),
+        headers: headers,
+      );
+      if (empResponse.statusCode == 200) {
+        employeeDetails = jsonDecode(empResponse.body);
+      }
+    }
+
+    // Determine confidence visuals
+    Color confidenceColor = Colors.red;
+    String confidenceLevel = "Low";
+
+    if (bestSimilarity >= _highMatchThreshold) {
+      confidenceColor = const Color.fromARGB(255, 59, 189, 61);
+      confidenceLevel = "Very High";
+    } else if (bestSimilarity >= 0.75) {
+      confidenceColor = Colors.green;
+      confidenceLevel = "High";
+    } else if (bestSimilarity >= 0.7) {
+      confidenceColor = Colors.lime;
+      confidenceLevel = "Medium";
+    } else {
+      confidenceColor = Colors.amber;
+      confidenceLevel = "Acceptable";
+    }
+
+    setState(() {
+      _statusMessage = '✓ Match found: $employeeId';
+      _showingSuccessDialog = true;
+      _isProcessing = false;
+    });
+
+    Future.delayed(const Duration(milliseconds: 500), () {
+  if (!mounted) return;
+
+  if (employeeDetails != null && employeeDetails['userName'] != null) {
+    debugPrint('✅ Showing success modal');
+    _showSuccessMatchDialog(
+      match,
+      employeeDetails,
+      bestSimilarity,
+      confidenceColor,
+      confidenceLevel,
+    );
+  } else {
+    // ❌ Modal not shown — fix stuck state
+    debugPrint('❌ No modal shown. Resetting UI manually...');
+    setState(() {
+      _showingSuccessDialog = false;
+      _isProcessing = false;
+      _attendanceMode = ''; // ✅ critical
+      _statusMessage = 'Attendance marked. Ready for next.';
+    });
   }
+});
+
+  } catch (e) {
+    debugPrint('❌ Face recognition error: $e');
+    setState(() {
+      _statusMessage = 'Error during recognition';
+      _isProcessing = false;
+    });
+    _processingTimer = Timer(const Duration(seconds: 3), _startFaceDetection);
+  }
+}
+
 
   // Function to save attendance record to local storage
   // void _saveAttendanceRecord(String employeeId) {
@@ -380,7 +371,7 @@ class _ScanFaceScreenState extends State<ScanFaceScreen>
   //   final now = DateTime.now();
   //   final formattedDate = DateFormat('yyyy-MM-dd').format(now);
   //   final formattedTime = DateFormat('HH:mm:ss').format(now);
-    
+
   //   // Create attendance record
   //   final attendanceRecord = {
   //     'employeeId': employeeId,
@@ -389,7 +380,7 @@ class _ScanFaceScreenState extends State<ScanFaceScreen>
   //     'type': _attendanceMode,
   //     'timestamp': now.millisecondsSinceEpoch,
   //   };
-    
+
   //   // Save to local storage
   //   try {
   //     // Using a simple key format: attendance_{employeeId}_{date}_{mode}
@@ -401,37 +392,47 @@ class _ScanFaceScreenState extends State<ScanFaceScreen>
   //   }
   // }
 
-  void _showSuccessMatchDialog(
+  // Full dynamic _showSuccessMatchDialog with real employee data
+void _showSuccessMatchDialog(
   Face match,
+  Map<String, dynamic> employeeDetails,
   double confidence,
   Color confidenceColor,
   String confidenceLevel,
-  double similarity,
 ) {
-  final String dummyName = "Paro Pradhan";
-  final String dummyShift = "Morning Shift";
-  final String dummyDesignation = "Software Engineer";
-  final String dummyImageUrl =
-      "https://images.unsplash.com/photo-1551393195-ba272fed3a7d?w=600&auto=format&fit=crop&q=60";
+  final dynamic userNameData = employeeDetails['userName'];
+String employeeName = 'Unknown';
+
+if (userNameData is Map<String, dynamic>) {
+  employeeName =
+      '${userNameData['salutation'] ?? ''} ${userNameData['firstName'] ?? ''} ${userNameData['lastName'] ?? ''}'.trim();
+} else if (userNameData is String) {
+  employeeName = userNameData;
+}
+
+  // final String employeeEmail = employeeDetails['userEmail'] ?? 'N/A';
+  final String employeeId = employeeDetails['userId'] ?? '---';
+  final String designation = employeeDetails['designationId']?['designationName'] ?? '---';
+  final String imageUrl = employeeDetails['userFaceImage'] != null && employeeDetails['userFaceImage'].isNotEmpty
+      ? 'http://10.0.2.2:5000/${employeeDetails['userFaceImage'][0]}'
+      : '';
+  final String shift = 'N/A'; // You can replace this with real shift data
+
   final String todayDate = DateFormat('yyyy-MM-dd').format(DateTime.now());
   final String todayTime = DateFormat('HH:mm:ss').format(DateTime.now());
 
-  // Get screen size for responsive design
+  // Screen size checks
   final Size screenSize = MediaQuery.of(context).size;
   final bool isSmallScreen = screenSize.width < 360;
   final bool isMediumScreen = screenSize.width >= 360 && screenSize.width < 600;
   final bool isTablet = screenSize.width >= 600;
 
-  // Show the ID card style dialog
   showDialog(
     context: context,
     barrierDismissible: false,
     builder: (_) => Dialog(
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       elevation: 8,
-      // Adjust inset padding based on screen size
       insetPadding: EdgeInsets.symmetric(
         horizontal: isSmallScreen ? 12 : (isMediumScreen ? 18 : 24),
         vertical: isSmallScreen ? 12 : 24,
@@ -439,7 +440,6 @@ class _ScanFaceScreenState extends State<ScanFaceScreen>
       child: LayoutBuilder(
         builder: (context, constraints) {
           return Container(
-            // Constrain max width for larger screens
             width: isTablet ? min(500, constraints.maxWidth) : constraints.maxWidth,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(20),
@@ -458,12 +458,14 @@ class _ScanFaceScreenState extends State<ScanFaceScreen>
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // Company logo/branding header
                     Container(
                       height: isSmallScreen ? 60 : 70,
                       decoration: BoxDecoration(
                         gradient: LinearGradient(
-                          colors: [Colors.cyan.shade700, Colors.cyan.shade900],
+                          colors: [
+                            Colors.cyan.shade700,
+                            Colors.cyan.shade900,
+                          ],
                           begin: Alignment.topLeft,
                           end: Alignment.bottomRight,
                         ),
@@ -472,11 +474,7 @@ class _ScanFaceScreenState extends State<ScanFaceScreen>
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Icon(
-                            Icons.verified_user,
-                            color: Colors.white,
-                            size: isSmallScreen ? 24 : 30,
-                          ),
+                          Icon(Icons.verified_user, color: Colors.white, size: isSmallScreen ? 24 : 30),
                           SizedBox(width: 8),
                           Flexible(
                             child: Text(
@@ -493,18 +491,14 @@ class _ScanFaceScreenState extends State<ScanFaceScreen>
                         ],
                       ),
                     ),
-                    
-                    // Main ID card content
                     Container(
                       color: Colors.white,
                       padding: EdgeInsets.all(isSmallScreen ? 12 : (isMediumScreen ? 16 : 20)),
                       child: Column(
                         children: [
-                          // Employee photo and basic info
                           isSmallScreen
                               ? Column(
                                   children: [
-                                    // Employee photo
                                     Container(
                                       width: 100,
                                       height: 120,
@@ -514,33 +508,24 @@ class _ScanFaceScreenState extends State<ScanFaceScreen>
                                       ),
                                       child: ClipRRect(
                                         borderRadius: BorderRadius.circular(3),
-                                        child: Image.network(
-                                          dummyImageUrl,
-                                          fit: BoxFit.cover,
-                                          errorBuilder: (context, error, stackTrace) => 
-                                            Container(
-                                              color: Colors.grey.shade200,
-                                              child: Icon(Icons.person, size: 60, color: Colors.grey),
-                                            ),
-                                        ),
+                                        child: imageUrl.isNotEmpty
+                                            ? Image.network(imageUrl, fit: BoxFit.cover)
+                                            : Icon(Icons.person, size: 60, color: Colors.grey),
                                       ),
                                     ),
                                     SizedBox(height: 16),
-                                    // Employee details
                                     _buildEmployeeDetails(
-                                      dummyName, 
-                                      dummyDesignation, 
-                                      match.employeeId, 
-                                      dummyShift,
+                                      employeeName,
+                                      designation,
+                                      employeeId,
+                                      shift,
                                       isSmallScreen,
-                                      isMediumScreen
+                                      isMediumScreen,
                                     ),
                                   ],
                                 )
                               : Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    // Employee photo with border
                                     Container(
                                       width: isMediumScreen ? 90 : 100,
                                       height: isMediumScreen ? 110 : 120,
@@ -550,46 +535,29 @@ class _ScanFaceScreenState extends State<ScanFaceScreen>
                                       ),
                                       child: ClipRRect(
                                         borderRadius: BorderRadius.circular(3),
-                                        child: Image.network(
-                                          dummyImageUrl,
-                                          fit: BoxFit.cover,
-                                          errorBuilder: (context, error, stackTrace) => 
-                                            Container(
-                                              color: Colors.grey.shade200,
-                                              child: Icon(Icons.person, size: 60, color: Colors.grey),
-                                            ),
-                                        ),
+                                        child: imageUrl.isNotEmpty
+                                            ? Image.network(imageUrl, fit: BoxFit.cover)
+                                            : Icon(Icons.person, size: 60, color: Colors.grey),
                                       ),
                                     ),
                                     SizedBox(width: 16),
-                                    
-                                    // Employee details
                                     Expanded(
                                       child: _buildEmployeeDetails(
-                                        dummyName, 
-                                        dummyDesignation, 
-                                        match.employeeId, 
-                                        dummyShift,
+                                        employeeName,
+                                        designation,
+                                        employeeId,
+                                        shift,
                                         isSmallScreen,
-                                        isMediumScreen
+                                        isMediumScreen,
                                       ),
                                     ),
                                   ],
                                 ),
-                          
                           SizedBox(height: isSmallScreen ? 16 : 20),
-                          
-                          // Divider
                           Divider(color: Colors.grey.shade300),
-                          
                           SizedBox(height: isSmallScreen ? 8 : 12),
-                          
-                          // Attendance information row
                           _buildAttendanceInfo(todayDate, todayTime, isSmallScreen, isMediumScreen),
-                          
                           SizedBox(height: isSmallScreen ? 16 : 20),
-                          
-                          // Match confidence indicators
                           Container(
                             padding: EdgeInsets.all(isSmallScreen ? 8 : 12),
                             decoration: BoxDecoration(
@@ -611,27 +579,25 @@ class _ScanFaceScreenState extends State<ScanFaceScreen>
                                 ),
                                 SizedBox(height: isSmallScreen ? 8 : 12),
                                 _buildConfidenceIndicators(
-                                  confidence, 
-                                  confidenceColor, 
-                                  confidenceLevel, 
-                                  similarity, 
-                                  isSmallScreen, 
-                                  isMediumScreen
+                                  confidence,
+                                  confidenceColor,
+                                  confidenceLevel,
+                                  confidence,
+                                  isSmallScreen,
+                                  isMediumScreen,
                                 ),
                               ],
                             ),
                           ),
-                          
                           SizedBox(height: isSmallScreen ? 16 : 24),
-                          
-                          // Continue button
                           SizedBox(
                             width: double.infinity,
                             child: ElevatedButton(
                               onPressed: () {
                                 setState(() {
                                   _showingSuccessDialog = false;
-                                  _attendanceMode = ''; // Reset attendance mode
+                                  _isProcessing = false;
+                                  _attendanceMode = '';
                                 });
                                 Navigator.of(context).pop();
                               },
@@ -657,13 +623,14 @@ class _ScanFaceScreenState extends State<ScanFaceScreen>
                         ],
                       ),
                     ),
-                    
-                    // Bottom branding strip
                     Container(
                       height: 8,
                       decoration: BoxDecoration(
                         gradient: LinearGradient(
-                          colors: [Colors.cyan.shade700, Colors.cyan.shade900],
+                          colors: [
+                            Colors.cyan.shade700,
+                            Colors.cyan.shade900,
+                          ],
                           begin: Alignment.centerLeft,
                           end: Alignment.centerRight,
                         ),
@@ -679,76 +646,77 @@ class _ScanFaceScreenState extends State<ScanFaceScreen>
     ),
   );
 
-  // Auto-dismiss after 5 seconds
   Timer(const Duration(seconds: 5), () {
     if (Navigator.of(context).canPop() && _showingSuccessDialog) {
       setState(() {
         _showingSuccessDialog = false;
-        _attendanceMode = ''; // Reset attendance mode after auto-dismiss
+        _isProcessing = false;
+        _attendanceMode = '';
       });
       Navigator.of(context).pop();
     }
   });
 }
 
-// Helper method to build employee details
-Widget _buildEmployeeDetails(
-  String name,
-  String designation,
-  String employeeId,
-  String shift,
-  bool isSmallScreen,
-  bool isMediumScreen,
-) {
-  return Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text(
-        name,
-        style: TextStyle(
-          fontSize: isSmallScreen ? 18 : (isMediumScreen ? 18 : 20),
-          fontWeight: FontWeight.bold,
-          color: Colors.blueGrey.shade800,
-        ),
-      ),
-      SizedBox(height: isSmallScreen ? 4 : 6),
-      Text(
-        designation,
-        style: TextStyle(
-          fontSize: isSmallScreen ? 14 : 16,
-          color: Colors.blueGrey.shade600,
-        ),
-      ),
-      SizedBox(height: isSmallScreen ? 4 : 6),
-      Text(
-        "ID: $employeeId",
-        style: TextStyle(
-          fontSize: isSmallScreen ? 13 : 14,
-          color: Colors.blueGrey.shade700,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-      SizedBox(height: isSmallScreen ? 4 : 6),
-      Text(
-        shift,
-        style: TextStyle(
-          fontSize: isSmallScreen ? 13 : 14,
-          color: Colors.blueGrey.shade600,
-        ),
-      ),
-    ],
-  );
-}
 
-// Helper method to build attendance information
-Widget _buildAttendanceInfo(
-  String date,
-  String time,
-  bool isSmallScreen,
-  bool isMediumScreen,
-) {
-  return isSmallScreen
-      ? Column(
+  // Helper method to build employee details
+  Widget _buildEmployeeDetails(
+    String name,
+    String designation,
+    String employeeId,
+    String shift,
+    bool isSmallScreen,
+    bool isMediumScreen,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          name,
+          style: TextStyle(
+            fontSize: isSmallScreen ? 18 : (isMediumScreen ? 18 : 20),
+            fontWeight: FontWeight.bold,
+            color: Colors.blueGrey.shade800,
+          ),
+        ),
+        SizedBox(height: isSmallScreen ? 4 : 6),
+        Text(
+          designation,
+          style: TextStyle(
+            fontSize: isSmallScreen ? 14 : 16,
+            color: Colors.blueGrey.shade600,
+          ),
+        ),
+        SizedBox(height: isSmallScreen ? 4 : 6),
+        Text(
+          "ID: $employeeId",
+          style: TextStyle(
+            fontSize: isSmallScreen ? 13 : 14,
+            color: Colors.blueGrey.shade700,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        SizedBox(height: isSmallScreen ? 4 : 6),
+        Text(
+          shift,
+          style: TextStyle(
+            fontSize: isSmallScreen ? 13 : 14,
+            color: Colors.blueGrey.shade600,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // Helper method to build attendance information
+  Widget _buildAttendanceInfo(
+    String date,
+    String time,
+    bool isSmallScreen,
+    bool isMediumScreen,
+  ) {
+    return isSmallScreen
+        ? Column(
           children: [
             _buildAttendanceItem("DATE", date, isSmallScreen, isMediumScreen),
             SizedBox(height: 12),
@@ -757,172 +725,234 @@ Widget _buildAttendanceInfo(
             _buildAttendanceStatus(isSmallScreen, isMediumScreen),
           ],
         )
-      : Row(
+        : Row(
           children: [
-            Expanded(child: _buildAttendanceItem("DATE", date, isSmallScreen, isMediumScreen)),
-            Expanded(child: _buildAttendanceItem("TIME", time, isSmallScreen, isMediumScreen)),
-            Expanded(child: _buildAttendanceStatus(isSmallScreen, isMediumScreen)),
-          ],
-        );
-}
-
-// Helper method to build a single attendance item
-Widget _buildAttendanceItem(
-  String label,
-  String value,
-  bool isSmallScreen,
-  bool isMediumScreen,
-) {
-  return Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text(
-        label,
-        style: TextStyle(
-          fontSize: isSmallScreen ? 10 : 12,
-          color: Colors.blueGrey.shade400,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-      SizedBox(height: 4),
-      Text(
-        value,
-        style: TextStyle(
-          fontSize: isSmallScreen ? 14 : (isMediumScreen ? 15 : 16),
-          color: Colors.blueGrey.shade800,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-    ],
-  );
-}
-
-// Helper method to build attendance status
-Widget _buildAttendanceStatus(bool isSmallScreen, bool isMediumScreen) {
-  return Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text(
-        "STATUS",
-        style: TextStyle(
-          fontSize: isSmallScreen ? 10 : 12,
-          color: Colors.blueGrey.shade400,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-      SizedBox(height: 4),
-      Container(
-        padding: EdgeInsets.symmetric(
-          horizontal: isSmallScreen ? 8 : 12,
-          vertical: isSmallScreen ? 3 : 4,
-        ),
-        decoration: BoxDecoration(
-          color: _attendanceMode == 'IN' ? Colors.green.shade100 : Colors.red.shade100,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              _attendanceMode == 'IN' ? Icons.login : Icons.logout,
-              size: isSmallScreen ? 14 : 16,
-              color: _attendanceMode == 'IN' ? Colors.green.shade700 : Colors.red.shade700,
-            ),
-            SizedBox(width: 4),
-            Text(
-              _attendanceMode,
-              style: TextStyle(
-                fontSize: isSmallScreen ? 13 : 14,
-                fontWeight: FontWeight.bold,
-                color: _attendanceMode == 'IN' ? Colors.green.shade700 : Colors.red.shade700,
+            Expanded(
+              child: _buildAttendanceItem(
+                "DATE",
+                date,
+                isSmallScreen,
+                isMediumScreen,
               ),
             ),
+            Expanded(
+              child: _buildAttendanceItem(
+                "TIME",
+                time,
+                isSmallScreen,
+                isMediumScreen,
+              ),
+            ),
+            Expanded(
+              child: _buildAttendanceStatus(isSmallScreen, isMediumScreen),
+            ),
           ],
-        ),
-      ),
-    ],
-  );
-}
+        );
+  }
 
-// Helper method to build confidence indicators
-Widget _buildConfidenceIndicators(
-  double confidence,
-  Color confidenceColor,
-  String confidenceLevel,
-  double similarity,
-  bool isSmallScreen,
-  bool isMediumScreen,
-) {
-  // For small screens, display in a column
-  if (isSmallScreen) {
+  // Helper method to build a single attendance item
+  Widget _buildAttendanceItem(
+    String label,
+    String value,
+    bool isSmallScreen,
+    bool isMediumScreen,
+  ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildConfidenceItem("CONFIDENCE", "${(confidence * 100).toStringAsFixed(1)}%", confidenceColor, isSmallScreen, isMediumScreen),
-        SizedBox(height: 10),
-        _buildConfidenceItem("LEVEL", confidenceLevel, confidenceColor, isSmallScreen, isMediumScreen),
-        SizedBox(height: 10),
-        _buildConfidenceItem("SIMILARITY", similarity.toStringAsFixed(3), confidenceColor, isSmallScreen, isMediumScreen),
-      ],
-    );
-  }
-  
-  // For medium and larger screens, display in a row
-  return Row(
-    children: [
-      Expanded(
-        child: _buildConfidenceItem("CONFIDENCE", "${(confidence * 100).toStringAsFixed(1)}%", confidenceColor, isSmallScreen, isMediumScreen),
-      ),
-      Expanded(
-        child: _buildConfidenceItem("LEVEL", confidenceLevel, confidenceColor, isSmallScreen, isMediumScreen),
-      ),
-      Expanded(
-        child: _buildConfidenceItem("SIMILARITY", similarity.toStringAsFixed(3), confidenceColor, isSmallScreen, isMediumScreen),
-      ),
-    ],
-  );
-}
-
-// Helper method to build a single confidence item
-Widget _buildConfidenceItem(
-  String label,
-  String value,
-  Color color,
-  bool isSmallScreen,
-  bool isMediumScreen,
-) {
-  return Column(
-    crossAxisAlignment: isSmallScreen ? CrossAxisAlignment.start : CrossAxisAlignment.center,
-    children: [
-      Text(
-        label,
-        style: TextStyle(
-          fontSize: isSmallScreen ? 10 : 11,
-          color: Colors.blueGrey.shade400,
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: isSmallScreen ? 10 : 12,
+            color: Colors.blueGrey.shade400,
+            fontWeight: FontWeight.w500,
+          ),
         ),
-      ),
-      SizedBox(height: 4),
-      Container(
-        padding: EdgeInsets.symmetric(
-          horizontal: isSmallScreen ? 8 : (isMediumScreen ? 10 : 12),
-          vertical: isSmallScreen ? 4 : 6,
-        ),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.2),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Text(
+        SizedBox(height: 4),
+        Text(
           value,
           style: TextStyle(
             fontSize: isSmallScreen ? 14 : (isMediumScreen ? 15 : 16),
-            fontWeight: FontWeight.bold,
-            color: color,
+            color: Colors.blueGrey.shade800,
+            fontWeight: FontWeight.w500,
           ),
         ),
-      ),
-    ],
-  );
-}
+      ],
+    );
+  }
+
+  // Helper method to build attendance status
+  Widget _buildAttendanceStatus(bool isSmallScreen, bool isMediumScreen) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          "STATUS",
+          style: TextStyle(
+            fontSize: isSmallScreen ? 10 : 12,
+            color: Colors.blueGrey.shade400,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        SizedBox(height: 4),
+        Container(
+          padding: EdgeInsets.symmetric(
+            horizontal: isSmallScreen ? 8 : 12,
+            vertical: isSmallScreen ? 3 : 4,
+          ),
+          decoration: BoxDecoration(
+            color:
+                _attendanceMode == 'IN'
+                    ? Colors.green.shade100
+                    : Colors.red.shade100,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                _attendanceMode == 'IN' ? Icons.login : Icons.logout,
+                size: isSmallScreen ? 14 : 16,
+                color:
+                    _attendanceMode == 'IN'
+                        ? Colors.green.shade700
+                        : Colors.red.shade700,
+              ),
+              SizedBox(width: 4),
+              Text(
+                _attendanceMode,
+                style: TextStyle(
+                  fontSize: isSmallScreen ? 13 : 14,
+                  fontWeight: FontWeight.bold,
+                  color:
+                      _attendanceMode == 'IN'
+                          ? Colors.green.shade700
+                          : Colors.red.shade700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // Helper method to build confidence indicators
+  Widget _buildConfidenceIndicators(
+    double confidence,
+    Color confidenceColor,
+    String confidenceLevel,
+    double similarity,
+    bool isSmallScreen,
+    bool isMediumScreen,
+  ) {
+    // For small screens, display in a column
+    if (isSmallScreen) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildConfidenceItem(
+            "CONFIDENCE",
+            "${(confidence * 100).toStringAsFixed(1)}%",
+            confidenceColor,
+            isSmallScreen,
+            isMediumScreen,
+          ),
+          SizedBox(height: 10),
+          _buildConfidenceItem(
+            "LEVEL",
+            confidenceLevel,
+            confidenceColor,
+            isSmallScreen,
+            isMediumScreen,
+          ),
+          SizedBox(height: 10),
+          _buildConfidenceItem(
+            "SIMILARITY",
+            similarity.toStringAsFixed(3),
+            confidenceColor,
+            isSmallScreen,
+            isMediumScreen,
+          ),
+        ],
+      );
+    }
+
+    // For medium and larger screens, display in a row
+    return Row(
+      children: [
+        Expanded(
+          child: _buildConfidenceItem(
+            "CONFIDENCE",
+            "${(confidence * 100).toStringAsFixed(1)}%",
+            confidenceColor,
+            isSmallScreen,
+            isMediumScreen,
+          ),
+        ),
+        Expanded(
+          child: _buildConfidenceItem(
+            "LEVEL",
+            confidenceLevel,
+            confidenceColor,
+            isSmallScreen,
+            isMediumScreen,
+          ),
+        ),
+        Expanded(
+          child: _buildConfidenceItem(
+            "SIMILARITY",
+            similarity.toStringAsFixed(3),
+            confidenceColor,
+            isSmallScreen,
+            isMediumScreen,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // Helper method to build a single confidence item
+  Widget _buildConfidenceItem(
+    String label,
+    String value,
+    Color color,
+    bool isSmallScreen,
+    bool isMediumScreen,
+  ) {
+    return Column(
+      crossAxisAlignment:
+          isSmallScreen ? CrossAxisAlignment.start : CrossAxisAlignment.center,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: isSmallScreen ? 10 : 11,
+            color: Colors.blueGrey.shade400,
+          ),
+        ),
+        SizedBox(height: 4),
+        Container(
+          padding: EdgeInsets.symmetric(
+            horizontal: isSmallScreen ? 8 : (isMediumScreen ? 10 : 12),
+            vertical: isSmallScreen ? 4 : 6,
+          ),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.2),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Text(
+            value,
+            style: TextStyle(
+              fontSize: isSmallScreen ? 14 : (isMediumScreen ? 15 : 16),
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
   Future<bool> _performLivenessCheck(FaceService faceService) async {
     if (_cameraController == null || !_isCameraInitialized || !mounted)
@@ -1007,95 +1037,97 @@ Widget _buildConfidenceItem(
 
           // IN/OUT Buttons
           Positioned(
-  bottom: 50, // Position above the status indicator
-  left: 0,
-  right: 0,
-  child: Container(
-    padding: EdgeInsets.symmetric(horizontal: 16), // Padding on left and right sides
-    child: LayoutBuilder(
-      builder: (context, constraints) {
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween, // Space buttons evenly
-          children: [
-            // IN Button - Expanded to take up available space
-            Expanded(
-              child: ElevatedButton(
-                onPressed: _isProcessing ? null : () => _setAttendanceMode('IN'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.green,
-                  foregroundColor: Colors.white,
-                  padding: EdgeInsets.symmetric(vertical: 24),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(15),
-                  ),
-                  elevation: 5,
-                  disabledBackgroundColor: Colors.grey.shade400,
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center, // Center the content
-                  children: [
-                    Icon(
-                      Icons.login, 
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                    SizedBox(width: 10),
-                    Text(
-                      'IN',
-                      style: TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
+            bottom: 50, // Position above the status indicator
+            left: 0,
+            right: 0,
+            child: Container(
+              padding: EdgeInsets.symmetric(
+                horizontal: 16,
+              ), // Padding on left and right sides
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  return Row(
+                    mainAxisAlignment:
+                        MainAxisAlignment.spaceBetween, // Space buttons evenly
+                    children: [
+                      // IN Button - Expanded to take up available space
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed:
+                              _isProcessing
+                                  ? null
+                                  : () => _setAttendanceMode('IN'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green,
+                            foregroundColor: Colors.white,
+                            padding: EdgeInsets.symmetric(vertical: 24),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            elevation: 5,
+                            disabledBackgroundColor: Colors.grey.shade400,
+                          ),
+                          child: Row(
+                            mainAxisAlignment:
+                                MainAxisAlignment.center, // Center the content
+                            children: [
+                              Icon(Icons.login, color: Colors.white, size: 28),
+                              SizedBox(width: 10),
+                              Text(
+                                'IN',
+                                style: TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
-                    ),
-                  ],
-                ),
+
+                      SizedBox(width: 16), // Consistent padding between buttons
+                      // OUT Button - Expanded to take up available space
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed:
+                              _isProcessing
+                                  ? null
+                                  : () => _setAttendanceMode('OUT'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red,
+                            foregroundColor: Colors.white,
+                            padding: EdgeInsets.symmetric(vertical: 24),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            elevation: 5,
+                            disabledBackgroundColor: Colors.grey.shade400,
+                          ),
+                          child: Row(
+                            mainAxisAlignment:
+                                MainAxisAlignment.center, // Center the content
+                            children: [
+                              Icon(Icons.logout, color: Colors.white, size: 28),
+                              SizedBox(width: 10),
+                              Text(
+                                'OUT',
+                                style: TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
-            
-            SizedBox(width: 16), // Consistent padding between buttons
-            
-            // OUT Button - Expanded to take up available space
-            Expanded(
-              child: ElevatedButton(
-                onPressed: _isProcessing ? null : () => _setAttendanceMode('OUT'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red,
-                  foregroundColor: Colors.white,
-                  padding: EdgeInsets.symmetric(vertical: 24),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(15),
-                  ),
-                  elevation: 5,
-                  disabledBackgroundColor: Colors.grey.shade400,
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center, // Center the content
-                  children: [
-                    Icon(
-                      Icons.logout, 
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                    SizedBox(width: 10),
-                    Text(
-                      'OUT',
-                      style: TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        );
-      },
-    ),
-  ),
-),
+          ),
 
           // Status indicator at bottom
           // Positioned(
@@ -1109,9 +1141,9 @@ Widget _buildConfidenceItem(
           //       color: Colors.black.withOpacity(0.7),
           //       borderRadius: BorderRadius.circular(20),
           //       border: Border.all(
-          //         color: _attendanceMode == 'IN' 
-          //           ? Colors.green.withOpacity(0.3) 
-          //           : _attendanceMode == 'OUT' 
+          //         color: _attendanceMode == 'IN'
+          //           ? Colors.green.withOpacity(0.3)
+          //           : _attendanceMode == 'OUT'
           //             ? Colors.red.withOpacity(0.3)
           //             : Colors.cyan.withOpacity(0.3),
           //         width: 1,
@@ -1133,9 +1165,9 @@ Widget _buildConfidenceItem(
           //               width: 24,
           //               height: 24,
           //               child: CircularProgressIndicator(
-          //                 color: _attendanceMode == 'IN' 
-          //                   ? Colors.green.shade200 
-          //                   : _attendanceMode == 'OUT' 
+          //                 color: _attendanceMode == 'IN'
+          //                   ? Colors.green.shade200
+          //                   : _attendanceMode == 'OUT'
           //                     ? Colors.red.shade200
           //                     : Colors.cyan.shade200,
           //                 strokeWidth: 2,
@@ -1202,91 +1234,13 @@ Widget _buildConfidenceItem(
   void _showHelpDialog() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            Icon(Icons.help_outline, color: Colors.cyan),
-            SizedBox(width: 10),
-            Text('Help & Instructions'),
-          ],
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: Icon(Icons.looks_one, color: Colors.cyan),
-                title: Text('Select Mode'),
-                subtitle: Text('Choose IN when arriving, OUT when leaving'),
-              ),
-              Divider(),
-              ListTile(
-                leading: Icon(Icons.looks_two, color: Colors.cyan),
-                title: Text('Position Your Face'),
-                subtitle: Text('Center your face within the oval guide'),
-              ),
-              Divider(),
-              ListTile(
-                leading: Icon(Icons.looks_3, color: Colors.cyan),
-                title: Text('Remain Still'),
-                subtitle: Text('Hold steady for the face verification'),
-              ),
-              Divider(),
-              ListTile(
-                leading: Icon(Icons.looks_4, color: Colors.cyan),
-                title: Text('Verification'),
-                subtitle: Text('The system will automatically verify your identity'),
-              ),
-              SizedBox(height: 10),
-              Container(
-                padding: EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.yellow.shade50,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.amber),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.info_outline, color: Colors.amber),
-                    SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        'Please ensure good lighting and remove glasses for best results.',
-                        style: TextStyle(fontSize: 12),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: Text('GOT IT'),
-            style: TextButton.styleFrom(foregroundColor: Colors.cyan),
-          ),
-        ],
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
-      ),
-    );
-  }
-
-  void _showSettingsDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) {
-          return AlertDialog(
+      builder:
+          (context) => AlertDialog(
             title: Row(
               children: [
-                Icon(Icons.settings, color: Colors.cyan),
+                Icon(Icons.help_outline, color: Colors.cyan),
                 SizedBox(width: 10),
-                Text('Recognition Settings'),
+                Text('Help & Instructions'),
               ],
             ),
             content: SingleChildScrollView(
@@ -1294,86 +1248,46 @@ Widget _buildConfidenceItem(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    'Face Match Threshold',
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ListTile(
+                    leading: Icon(Icons.looks_one, color: Colors.cyan),
+                    title: Text('Select Mode'),
+                    subtitle: Text('Choose IN when arriving, OUT when leaving'),
                   ),
-                  Slider(
-                    value: _matchSimilarityThreshold,
-                    min: 0.5,
-                    max: 0.9,
-                    divisions: 8,
-                    label: _matchSimilarityThreshold.toStringAsFixed(2),
-                    onChanged: (value) {
-                      setState(() {
-                        _matchSimilarityThreshold = value;
-                      });
-                    },
+                  Divider(),
+                  ListTile(
+                    leading: Icon(Icons.looks_two, color: Colors.cyan),
+                    title: Text('Position Your Face'),
+                    subtitle: Text('Center your face within the oval guide'),
                   ),
-                  Text(
-                    'Current: ${_matchSimilarityThreshold.toStringAsFixed(2)} (Higher = Stricter)',
-                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  Divider(),
+                  ListTile(
+                    leading: Icon(Icons.looks_3, color: Colors.cyan),
+                    title: Text('Remain Still'),
+                    subtitle: Text('Hold steady for the face verification'),
                   ),
-                  SizedBox(height: 16),
-                  
-                  Text(
-                    'High Match Threshold',
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                  Divider(),
+                  ListTile(
+                    leading: Icon(Icons.looks_4, color: Colors.cyan),
+                    title: Text('Verification'),
+                    subtitle: Text(
+                      'The system will automatically verify your identity',
+                    ),
                   ),
-                  Slider(
-                    value: _highMatchThreshold,
-                    min: 0.7,
-                    max: 0.95,
-                    divisions: 5,
-                    label: _highMatchThreshold.toStringAsFixed(2),
-                    onChanged: (value) {
-                      setState(() {
-                        _highMatchThreshold = value;
-                      });
-                    },
-                  ),
-                  Text(
-                    'Current: ${_highMatchThreshold.toStringAsFixed(2)} (For high confidence display)',
-                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                  ),
-                  SizedBox(height: 16),
-                  
-                  Text(
-                    'Minimum Confidence Score',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  Slider(
-                    value: _minConfidenceScore,
-                    min: 0.3,
-                    max: 0.7,
-                    divisions: 8,
-                    label: _minConfidenceScore.toStringAsFixed(2),
-                    onChanged: (value) {
-                      setState(() {
-                        _minConfidenceScore = value;
-                      });
-                    },
-                  ),
-                  Text(
-                    'Current: ${_minConfidenceScore.toStringAsFixed(2)} (Higher = More strict)',
-                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                  ),
-                  SizedBox(height: 16),
-                  
+                  SizedBox(height: 10),
                   Container(
                     padding: EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: Colors.cyan.shade50,
+                      color: Colors.yellow.shade50,
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.cyan.shade200),
+                      border: Border.all(color: Colors.amber),
                     ),
                     child: Row(
                       children: [
-                        Icon(Icons.info_outline, color: Colors.cyan),
+                        Icon(Icons.info_outline, color: Colors.amber),
                         SizedBox(width: 10),
                         Expanded(
                           child: Text(
-                            'Increasing thresholds improves security but may reduce recognition rates in challenging conditions.',
+                            'Please ensure good lighting and remove glasses for best results.',
                             style: TextStyle(fontSize: 12),
                           ),
                         ),
@@ -1386,112 +1300,155 @@ Widget _buildConfidenceItem(
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: Text('CANCEL'),
-                style: TextButton.styleFrom(foregroundColor: Colors.grey),
-              ),
-              TextButton(
-                onPressed: () {
-                  // Apply settings to main widget state
-                  this.setState(() {
-                    this._matchSimilarityThreshold = _matchSimilarityThreshold;
-                    this._highMatchThreshold = _highMatchThreshold;
-                    this._minConfidenceScore = _minConfidenceScore;
-                  });
-                  Navigator.of(context).pop();
-                },
-                child: Text('SAVE'),
+                child: Text('GOT IT'),
                 style: TextButton.styleFrom(foregroundColor: Colors.cyan),
               ),
             ],
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16),
             ),
-          );
-        },
-      ),
+          ),
+    );
+  }
+
+  void _showSettingsDialog() {
+    showDialog(
+      context: context,
+      builder:
+          (context) => StatefulBuilder(
+            builder: (context, setState) {
+              return AlertDialog(
+                title: Row(
+                  children: [
+                    Icon(Icons.settings, color: Colors.cyan),
+                    SizedBox(width: 10),
+                    Text('Recognition Settings'),
+                  ],
+                ),
+                content: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Face Match Threshold',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      Slider(
+                        value: _matchSimilarityThreshold,
+                        min: 0.5,
+                        max: 0.9,
+                        divisions: 8,
+                        label: _matchSimilarityThreshold.toStringAsFixed(2),
+                        onChanged: (value) {
+                          setState(() {
+                            _matchSimilarityThreshold = value;
+                          });
+                        },
+                      ),
+                      Text(
+                        'Current: ${_matchSimilarityThreshold.toStringAsFixed(2)} (Higher = Stricter)',
+                        style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                      ),
+                      SizedBox(height: 16),
+
+                      Text(
+                        'High Match Threshold',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      Slider(
+                        value: _highMatchThreshold,
+                        min: 0.7,
+                        max: 0.95,
+                        divisions: 5,
+                        label: _highMatchThreshold.toStringAsFixed(2),
+                        onChanged: (value) {
+                          setState(() {
+                            _highMatchThreshold = value;
+                          });
+                        },
+                      ),
+                      Text(
+                        'Current: ${_highMatchThreshold.toStringAsFixed(2)} (For high confidence display)',
+                        style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                      ),
+                      SizedBox(height: 16),
+
+                      Text(
+                        'Minimum Confidence Score',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      Slider(
+                        value: _minConfidenceScore,
+                        min: 0.3,
+                        max: 0.7,
+                        divisions: 8,
+                        label: _minConfidenceScore.toStringAsFixed(2),
+                        onChanged: (value) {
+                          setState(() {
+                            _minConfidenceScore = value;
+                          });
+                        },
+                      ),
+                      Text(
+                        'Current: ${_minConfidenceScore.toStringAsFixed(2)} (Higher = More strict)',
+                        style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                      ),
+                      SizedBox(height: 16),
+
+                      Container(
+                        padding: EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.cyan.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.cyan.shade200),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.info_outline, color: Colors.cyan),
+                            SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Increasing thresholds improves security but may reduce recognition rates in challenging conditions.',
+                                style: TextStyle(fontSize: 12),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: Text('CANCEL'),
+                    style: TextButton.styleFrom(foregroundColor: Colors.grey),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      // Apply settings to main widget state
+                      this.setState(() {
+                        this._matchSimilarityThreshold =
+                            _matchSimilarityThreshold;
+                        this._highMatchThreshold = _highMatchThreshold;
+                        this._minConfidenceScore = _minConfidenceScore;
+                      });
+                      Navigator.of(context).pop();
+                    },
+                    child: Text('SAVE'),
+                    style: TextButton.styleFrom(foregroundColor: Colors.cyan),
+                  ),
+                ],
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              );
+            },
+          ),
     );
   }
 }
-
-// Custom painter for the face oval and scan effect
-// class FaceOverlayPainter extends CustomPainter {
-//   final double scanPosition;
-
-//   FaceOverlayPainter({required this.scanPosition});
-
-//   @override
-//   void paint(Canvas canvas, Size size) {
-//     final width = size.width;
-//     final height = size.height;
-    
-//     // Calculate oval dimensions (make it slightly taller for face)
-//     final ovalWidth = width * 0.7;
-//     final ovalHeight = height * 0.55;
-//     final ovalLeft = (width - ovalWidth) / 2;
-//     final ovalTop = (height - ovalHeight) / 3; // Position higher on screen
-    
-//     // Create an oval rect
-//     final ovalRect = Rect.fromLTWH(ovalLeft, ovalTop, ovalWidth, ovalHeight);
-    
-//     // Create a path for the oval
-//     final ovalPath = Path()..addOval(ovalRect);
-    
-//     // Create a path for the entire screen
-//     final screenPath = Path()..addRect(Rect.fromLTWH(0, 0, width, height));
-    
-//     // Use difference to create the mask effect
-//     final backgroundPath = Path.combine(
-//       PathOperation.difference,
-//       screenPath,
-//       ovalPath,
-//     );
-    
-//     // Fill the mask with semi-transparent black
-//     final paint = Paint()
-//       ..color = Colors.black.withOpacity(0.6)
-//       ..style = PaintingStyle.fill;
-//     canvas.drawPath(backgroundPath, paint);
-    
-//     // Draw the oval border
-//     final borderPaint = Paint()
-//       ..color = Colors.cyan
-//       ..style = PaintingStyle.stroke
-//       ..strokeWidth = 2.0;
-//     canvas.drawPath(ovalPath, borderPaint);
-    
-//     // Draw the scan line
-//     final scanY = ovalTop + (ovalHeight * scanPosition);
-//     final scanLinePaint = Paint()
-//       ..color = Colors.cyan.withOpacity(0.8)
-//       ..style = PaintingStyle.stroke
-//       ..strokeWidth = 2.0;
-    
-//     // Draw horizontal scan line
-//     canvas.drawLine(
-//       Offset(ovalLeft, scanY),
-//       Offset(ovalLeft + ovalWidth, scanY),
-//       scanLinePaint,
-//     );
-    
-//     // Add glow effect to scan line
-//     final glowPaint = Paint()
-//       ..color = Colors.cyan.withOpacity(0.3)
-//       ..style = PaintingStyle.stroke
-//       ..strokeWidth = 5.0
-//       ..maskFilter = MaskFilter.blur(BlurStyle.normal, 5);
-    
-//     canvas.drawLine(
-//       Offset(ovalLeft, scanY),
-//       Offset(ovalLeft + ovalWidth, scanY),
-//       glowPaint,
-//     );
-//   }
-
-//   @override
-//   bool shouldRepaint(FaceOverlayPainter oldDelegate) {
-//     return oldDelegate.scanPosition != scanPosition;
-//   }
-// }
 
 class FaceOverlayPainter extends CustomPainter {
   final double scanPosition;
